@@ -1,7 +1,5 @@
 const express = require('express');
-const puppeteer = process.env.NODE_ENV === 'production'
-    ? require('puppeteer-core')
-    : require('puppeteer');
+const puppeteer = require('puppeteer');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
@@ -59,24 +57,23 @@ const getFlightTimes = async (date, flightType) => {
     let browser = null;
     try {
         // Launch browser with additional options for reliability
-        const browserOptions = process.env.NODE_ENV === 'production'
-            ? {
-                // No executablePath specified - use bundled Chromium
-                headless: true,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',
-                    '--single-process'
-                ]
-            }
-            : {
+        let browser = null;
+
+        if (process.env.NODE_ENV === 'production') {
+            const browserFetcher = new BrowserFetcher();
+            const revisionInfo = await browserFetcher.download('1095492'); // A specific Chrome version
+
+            browser = await puppeteer.launch({
+                executablePath: revisionInfo.executablePath,
                 headless: true,
                 args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-            };
-
-        browser = await puppeteer.launch(browserOptions);
+            });
+        } else {
+            browser = await puppeteer.launch({
+                headless: true,
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            });
+        }
 
         const page = await browser.newPage();
 
@@ -319,7 +316,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Start the server
-const server = app.listen(port, () => {
+app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
