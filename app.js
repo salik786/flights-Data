@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const axios = require('axios');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
@@ -22,18 +22,19 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// Utility function to format the date as `YYYY/MM/DD`
+// Utility function to format the date as `YYYY-MM-DD`
 const formatDate = (date) => {
     const day = String(date.getDate()).padStart(2, '0');
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const year = date.getFullYear();
-    return `${year}/${month}/${day}`;
+    return `${year}-${month}-${day}`;
 };
 
 // Function to validate input parameters
-const validateParams = (date, flightType) => {
+const validateParams = (date, flightType, flightDirection) => {
     const validFlightTypes = ['domestic', 'international'];
     const validDates = ['today', 'yesterday', 'tomorrow', 'day_after_tomorrow'];
+    const validDirections = ['arrival', 'departure'];
 
     if (flightType && !validFlightTypes.includes(flightType)) {
         return { isValid: false, message: 'Invalid flight type. Use "domestic" or "international".' };
@@ -43,136 +44,102 @@ const validateParams = (date, flightType) => {
         return { isValid: false, message: 'Invalid date. Use "today", "yesterday", "tomorrow", or "day_after_tomorrow".' };
     }
 
+    if (flightDirection && !validDirections.includes(flightDirection)) {
+        return { isValid: false, message: 'Invalid flight direction. Use "arrival" or "departure".' };
+    }
+
     return { isValid: true };
 };
 
-// Function to get flight data with improved error handling
-const getFlightTimes = async (date, flightType) => {
-    const terminalType = flightType === 'domestic' ? 'domestic' : 'international';
+// Function to get flight data from Sydney Airport API
+const getFlightData = async (date, flightType, flightDirection) => {
     const formattedDate = formatDate(date);
-    console.log(`Fetching ${terminalType} flights for ${formattedDate}`);
+    console.log(`Fetching ${flightType} ${flightDirection}s for ${formattedDate}`);
 
-    const url = `https://www.sydneyairport.com.au/flights/?query=&flightType=arrival&terminalType=${terminalType}&date=${formattedDate}&sortColumn=scheduled_time&ascending=true&showAll=true`;
+    // Build the API URL - based on the format you provided
+    const apiUrl = `https://www.sydneyairport.com.au/_a/flights?filter=&date=${formattedDate}&count=1000&startFrom=0&seq=1&sortColumn=scheduled_time&ascending=true&showAll=true&terminalType=${flightType}&flightType=${flightDirection}`;
 
-    let browser = null;
     try {
-        // Launch browser with additional options for reliability
-        let browser = null;
-
-        if (process.env.NODE_ENV === 'production') {
-            const browserFetcher = new BrowserFetcher();
-            const revisionInfo = await browserFetcher.download('1095492'); // A specific Chrome version
-
-            browser = await puppeteer.launch({
-                executablePath: revisionInfo.executablePath,
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-            });
-        } else {
-            browser = await puppeteer.launch({
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-            });
-        }
-
-        const page = await browser.newPage();
-
-        // Set timeout and user agent
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-        await page.setDefaultNavigationTimeout(90000); // 90 seconds
-
-        // Navigate to the page
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-
-        // Wait for selector with timeout
-        const selectorResponse = await Promise.race([
-            page.waitForSelector('.flight-card').then(() => ({ success: true })),
-            new Promise(resolve => setTimeout(() => resolve({ success: false, error: 'Timeout waiting for flight data' }), 30000))
-        ]);
-
-        if (!selectorResponse.success) {
-            throw new Error(selectorResponse.error);
-        }
-
-        // Extract flight data
-        const flightData = await page.evaluate(() => {
-            const flights = [];
-            const flightCards = document.querySelectorAll('.flight-card');
-
-            flightCards.forEach(card => {
-                try {
-                    // Get scheduled time
-                    const scheduledTimeElement = card.querySelector('.middle-pane .times .latest-time div');
-
-                    // Get flight number
-                    const flightNumberElement = card.querySelector('.flight-number');
-
-                    // Get origin location
-                    const originElement = card.querySelector('.origin-destination');
-
-                    // Get status - improved status detection
-                    const statusContainer = card.querySelector('.status-container');
-                    const statusElement = statusContainer ? statusContainer.querySelector('.status') : null;
-                    let status = 'on time'; // default status
-
-                    if (statusElement) {
-                        const statusText = statusElement.textContent.trim().toLowerCase();
-                        const hasRedClass = statusElement.classList.contains('red');
-
-                        // Check for cancelled flights
-                        if (statusText.includes('cancelled') || hasRedClass) {
-                            status = 'cancelled';
-                        }
-                        // Check for delayed flights
-                        else if (statusText.includes('delayed') ||
-                            statusElement.classList.contains('amber') ||
-                            card.querySelector('.delayed-time-small')) {
-                            status = 'delayed';
-                        }
-                    }
-
-                    // Get airline
-                    const airlineElement = card.querySelector('.airline-logo span.with-image');
-
-                    const scheduledTime = scheduledTimeElement ? scheduledTimeElement.textContent.trim() : '';
-                    const airline = airlineElement ? airlineElement.textContent.trim().toLowerCase() : '';
-                    const flightNumber = flightNumberElement ? flightNumberElement.textContent.trim() : '';
-                    const origin = originElement ? originElement.textContent.trim() : '';
-
-                    flights.push({
-                        scheduledTime,
-                        status,
-                        airline,
-                        flightNumber,
-                        origin,
-                        rawStatus: statusElement ? statusElement.textContent.trim() : 'Unknown' // for debugging
-                    });
-                } catch (err) {
-                    // Skip problematic flight cards but log error info
-                    console.error('Error processing flight card:', err);
-                }
-            });
-            return flights;
+        // Make the API request with necessary headers
+        const response = await axios.get(apiUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'application/json',
+                'Referer': 'https://www.sydneyairport.com.au/flights/',
+                'Origin': 'https://www.sydneyairport.com.au'
+            },
+            timeout: 30000 // 30 second timeout
         });
 
-        // Close browser
-        await browser.close();
-        browser = null;
+        // Extract the data - based on the sample response you provided
+        // The data appears to be directly in the response rather than in a 'results' property
+        const data = response.data;
 
-        // Debug log to check status distribution
-        const statusCount = flightData.reduce((acc, flight) => {
+        if (!data || !data.flightData || !Array.isArray(data.flightData)) {
+            console.error('Unexpected API response format:', data);
+            throw new Error('Unexpected API response format');
+        }
+
+        console.log(`Total flights found: ${data.totalFlightCount}`);
+
+        // Process and transform the flight data
+        const processedData = data.flightData.map(flight => {
+            // Determine flight status based on the status field and statusColor
+            let status = 'on time';
+
+            if (flight.status) {
+                const statusLower = flight.status.toLowerCase();
+                if (statusLower.includes('cancel')) {
+                    status = 'cancelled';
+                } else if (statusLower.includes('delay') ||
+                    (flight.estimatedTime && flight.estimatedTime !== flight.scheduledTime && flight.estimatedTime !== '-')) {
+                    status = 'delayed';
+                }
+            }
+
+            // Determine if this is a Qantas flight (terminal 3)
+            const isT3 = flight.airline && flight.airline.toLowerCase().includes('qantas');
+
+            // Join destinations array into a string
+            const location = Array.isArray(flight.destinations)
+                ? flight.destinations.join(', ')
+                : (Array.isArray(flight.origins) ? flight.origins.join(', ') : '');
+
+            // Join flight numbers array into a string
+            const flightNumber = Array.isArray(flight.flightNumbers)
+                ? flight.flightNumbers.join(', ')
+                : '';
+
+            return {
+                id: flight.id,
+                scheduledTime: flight.scheduledTime || '',
+                estimatedTime: flight.estimatedTime || '',
+                status,
+                statusColor: flight.statusColor || '',
+                airline: flight.airline || '',
+                airlineCode: flight.airlineCode || '',
+                flightNumber,
+                location,
+                terminal: isT3 ? 'T3' : 'T2',
+                rawStatus: flight.status || 'Unknown'
+            };
+        });
+
+        // Log status distribution for debugging
+        const statusCount = processedData.reduce((acc, flight) => {
             acc[flight.status] = (acc[flight.status] || 0) + 1;
             return acc;
         }, {});
         console.log('Status distribution:', statusCount);
-        console.log(`Total flights found: ${flightData.length}`);
 
-        return flightData;
+        return {
+            totalFlights: data.totalFlightCount,
+            flights: processedData
+        };
     } catch (error) {
-        console.error('Error fetching flight data:', error);
-        // Ensure browser is closed in case of error
-        if (browser) {
-            await browser.close();
+        console.error('Error fetching flight data:', error.message);
+        if (error.response) {
+            console.error('Response status:', error.response.status);
         }
         throw error;
     }
@@ -181,10 +148,14 @@ const getFlightTimes = async (date, flightType) => {
 // Endpoint to get flight data based on selected filters
 app.get('/api/flights', async (req, res) => {
     try {
-        const { date = 'today', flightType = 'domestic' } = req.query;
+        const {
+            date = 'today',
+            flightType = 'domestic',
+            flightDirection = 'departure'
+        } = req.query;
 
         // Validate parameters
-        const validation = validateParams(date, flightType);
+        const validation = validateParams(date, flightType, flightDirection);
         if (!validation.isValid) {
             return res.status(400).json({ error: validation.message });
         }
@@ -200,30 +171,31 @@ app.get('/api/flights', async (req, res) => {
             dateToFetch.setDate(dateToFetch.getDate() + 2);
         }
 
-        console.log(`Processing request for ${date} (${dateToFetch.toDateString()}), flight type: ${flightType}`);
+        console.log(`Processing request for ${date} (${dateToFetch.toDateString()}), flight type: ${flightType}, direction: ${flightDirection}`);
 
-        // Get flight data for the selected date and flight type (domestic/international)
-        const flightData = await getFlightTimes(dateToFetch, flightType);
+        // Get flight data for the selected date and flight type
+        const { totalFlights, flights } = await getFlightData(dateToFetch, flightType, flightDirection);
 
         // Process the flight data
         const flightStatuses = {
-            on_time: flightData.filter(flight => flight.status === 'on time').length,
-            cancelled: flightData.filter(flight => flight.status === 'cancelled').length,
-            delayed: flightData.filter(flight => flight.status === 'delayed').length,
+            on_time: flights.filter(flight => flight.status === 'on time').length,
+            cancelled: flights.filter(flight => flight.status === 'cancelled').length,
+            delayed: flights.filter(flight => flight.status === 'delayed').length,
         };
 
         // Extract unique airlines
-        const airlines = [...new Set(flightData.map(flight => flight.airline))].filter(Boolean);
+        const airlines = [...new Set(flights.map(flight => flight.airline))].filter(Boolean);
 
-        // Extract unique origins
-        const origins = [...new Set(flightData.map(flight => flight.origin))].filter(Boolean);
+        // Extract unique origins/destinations
+        const locations = [...new Set(flights.map(flight => flight.location))].filter(Boolean);
 
         // Count flights by terminal and hour
         const flightCountByHour = {};
-        flightData.forEach(flight => {
+        flights.forEach(flight => {
+            // Extract hour from time format like "18:25"
             const [hour] = flight.scheduledTime.split(':');
             const flightHour = parseInt(hour, 10);
-            const isT3 = flight.airline.includes('qantas');
+            const isT3 = flight.terminal === 'T3';
 
             if (!isNaN(flightHour)) {
                 if (!flightCountByHour[flightHour]) {
@@ -244,11 +216,13 @@ app.get('/api/flights', async (req, res) => {
         let maxHour = 0;
         let minHour = 0;
 
+        // Set initial response structure
         const flightCountJSON = {
             airport: "Sydney Airport",
             date: formatDate(dateToFetch),
             flight_type: flightType,
-            total_flights: flightData.length,
+            flight_direction: flightDirection,
+            total_flights: totalFlights,
             flight_count: {},
             flight_statuses: flightStatuses,
             peak_hours: {
@@ -256,9 +230,8 @@ app.get('/api/flights', async (req, res) => {
                 lowest_flights: null,
             },
             airlines: airlines,
-            origins: origins,
-            // Include sample of raw flight data for debugging
-            sample_flights: flightData.slice(0, 5)
+            locations: locations,
+            sample_flights: flights.slice(0, 5)
         };
 
         // Format the flight counts and calculate peak hours
@@ -280,18 +253,19 @@ app.get('/api/flights', async (req, res) => {
         // Set peak hours
         flightCountJSON.peak_hours.max_flights = {
             hour: `${maxHour}-${maxHour + 1}`,
-            count: maxFlights
+            count: maxFlights || 0
         };
 
         flightCountJSON.peak_hours.lowest_flights = {
             hour: `${minHour}-${minHour + 1}`,
-            count: minFlights
+            count: minFlights !== Infinity ? minFlights : 0
         };
 
         // Add metadata for caching and processing
         flightCountJSON.metadata = {
             processed_at: new Date().toISOString(),
-            version: '1.1'
+            version: '1.0',
+            source: 'sydney_airport_api'
         };
 
         // Send the final response with the structured data
@@ -300,7 +274,7 @@ app.get('/api/flights', async (req, res) => {
         console.error('API error:', error);
         res.status(500).json({
             error: 'Failed to fetch flight data',
-            message: error.message,
+            message: error.message || 'Unknown error',
             timestamp: new Date().toISOString()
         });
     }
@@ -311,12 +285,12 @@ app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        version: '1.1'
+        version: '1.0'
     });
 });
 
 // Start the server
-app.listen(port, () => {
+const server = app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
