@@ -61,15 +61,13 @@ const getFlightTimes = async (date, flightType) => {
         // Launch browser with additional options for reliability
         const browserOptions = process.env.NODE_ENV === 'production'
             ? {
-                executablePath: '/usr/bin/google-chrome-stable',
+                // No executablePath specified - use bundled Chromium
                 headless: true,
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
+                    '--disable-gpu',
                     '--single-process'
                 ]
             }
