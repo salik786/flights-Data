@@ -1,5 +1,7 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const puppeteer = process.env.NODE_ENV === 'production'
+    ? require('puppeteer-core')
+    : require('puppeteer');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
@@ -57,10 +59,26 @@ const getFlightTimes = async (date, flightType) => {
     let browser = null;
     try {
         // Launch browser with additional options for reliability
-        browser = await puppeteer.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-        });
+        const browserOptions = process.env.NODE_ENV === 'production'
+            ? {
+                executablePath: '/usr/bin/google-chrome-stable',
+                headless: true,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process'
+                ]
+            }
+            : {
+                headless: true,
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            };
+
+        browser = await puppeteer.launch(browserOptions);
 
         const page = await browser.newPage();
 
